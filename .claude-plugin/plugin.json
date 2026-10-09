@@ -1,7 +1,7 @@
 {
   "name": "prompt-stats",
   "displayName": "Prompt Stats",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Live context usage and prompt-cache hit rate on the hint line under the prompt.",
   "author": { "name": "liyidong" },
   "types": "./types/index.d.ts"

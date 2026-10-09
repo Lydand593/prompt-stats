@@ -74,6 +74,9 @@ async function readAppearance($: EngineInterface): Promise<void> {
   const held = await read($, appearance)
   if (held !== look) {
     await update($, appearance, () => look)
+    // A write alone does not reach the screen; the draw is asked for, so the
+    // switch shows while the session sits idle instead of at the next turn.
+    $.ui.invalidate('ui.render')
   }
 }
 
