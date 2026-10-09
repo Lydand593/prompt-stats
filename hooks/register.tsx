@@ -22,6 +22,10 @@ const NO_HIT = '    —%'
 
 let streamed = 0
 
+// The conversation's ledger key in the host's store, which outlives the
+// process; set once the session's id is known.
+let costKey: string | null = null
+
 // The step names the model Claude Code asked for; the model that answers only
 // arrives with the response's usage. Price by the last one seen.
 let answered = 'deepseek-flash'
@@ -112,13 +116,29 @@ async function readAppearance($: EngineInterface): Promise<void> {
   const rows = await $.config.list().catch(() => undefined)
   const setting = rows?.find(row => row.key === 'theme')?.value
 
-  const mode = surface === 'desktop' ? await readAppMode($) : null
-  const systemDark =
-    mode === null && setting !== 'light' && setting !== 'dark'
-      ? await probeSystemDark($)
-      : null
+  let mode: Appearance | null = null
+  let systemDark: boolean | null = null
+  let look: Appearance
 
-  const look = mode ?? appearanceOf(setting, systemDark)
+  if (surface === 'desktop') {
+    // The app's own control leads. With `system` (or no answer) its window
+    // follows the machine, so the probe decides; Claude Code's theme row does
+    // not drive the app window and stays out of it.
+    mode = await readAppMode($)
+    if (mode !== null) {
+      look = mode
+    } else {
+      systemDark = await probeSystemDark($)
+      look =
+        systemDark === null ? appearanceOf(setting, null) : systemDark ? 'dark' : 'light'
+    }
+  } else {
+    // A terminal draws with Claude Code's theme row exactly.
+    if (setting !== 'light' && setting !== 'dark') {
+      systemDark = await probeSystemDark($)
+    }
+    look = appearanceOf(setting, systemDark)
+  }
 
   const held = await read($, appearance)
   if (held !== look) {
@@ -130,9 +150,10 @@ async function readAppearance($: EngineInterface): Promise<void> {
 }
 
 // The machine's appearance can change while the session runs and nobody asks
-// anything of it, so a quiet poll re-reads the pair and asks for the draw every
-// period — the ask is what makes the switch show without a turn.
-const APPEARANCE_POLL_MS = 5_000
+// anything of it, and no API announces the switch, so a quiet poll re-reads the
+// pair and asks for the draw every period — the ask is what makes the switch
+// show without a turn. A period short enough to read as immediate.
+const APPEARANCE_POLL_MS = 1_000
 let appearancePoll: Timer | null = null
 
 function watchAppearance($: EngineInterface): void {
@@ -197,6 +218,22 @@ async function settleStep($: EngineInterface, usage: TurnUsage): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+
+    // A fresh process starts with empty state: a conversation with a saved
+    // ledger picks its total back up, so a restart does not lose the record.
+    // The conversation's id keys it; without one, the project's directory does.
+    const id = await $.session.id().catch(() => undefined)
+    costKey =
+      id !== undefined
+        ? `session-cost:${id}`
+        : `cost:${await $.session.cwd().catch(() => 'unknown')}`
+
+    const held = await read($, cost)
+    const saved = await $.store.get(costKey).catch(() => undefined)
+    if (held === null && typeof saved === 'number' && saved > 0) {
+      await update($, cost, () => ({ cny: saved, live: 0, pending: 0 }))
+    }
+
     await readAppearance($).catch(() => undefined)
     watchAppearance($)
     return result
@@ -318,6 +355,14 @@ export const register: Register = on => {
       if (usage !== undefined) {
         await showHit($, usage)
       }
+
+      // Write the conversation's ledger where a restart can find it.
+      if (costKey !== null) {
+        const settled = await read($, cost)
+        if (settled !== null) {
+          await $.store.set(costKey, settled.cny).catch(() => undefined)
+        }
+      }
     }
 
     return result
@@ -325,6 +370,12 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     streamed = 0
+
+    // /clear starts the conversation over: its ledger goes with it. A quit or
+    // a switch keeps it, so the record survives restarts.
+    if (costKey !== null && e.reason === 'clear') {
+      await $.store.delete(costKey).catch(() => undefined)
+    }
 
     await update($, turn, () => null)
     await update($, cost, () => null)

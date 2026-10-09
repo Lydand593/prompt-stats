@@ -330,4 +330,32 @@ for (const surface of SURFACES) {
     await clock.advance(10_000)
     expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
   })
+
+  test(`the ledger survives a restart, and /clear starts fresh (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    mock.clock(on, { now: NOW })
+    mock.store(on, {})
+
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    const ui = await $.ui.mount(footer(surface))
+
+    await $.turn.complete({ ...DONE, usage: usage(1_000_000, 0, 0, 0) })
+    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+
+    // A restart is an end and a start over the same conversation: the total
+    // comes back from the store. /clear is an end that takes the ledger with it.
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
+  })
 }
