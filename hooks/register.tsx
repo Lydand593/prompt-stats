@@ -107,6 +107,34 @@ async function readAppMode($: EngineInterface): Promise<Appearance | null> {
   }
 }
 
+// What a fresh process restores, off the session's own start: the ledger a
+// conversation left in the store, and the appearance with its poll.
+async function boot($: EngineInterface): Promise<void> {
+  // A conversation with a saved ledger picks its total back up, so a restart
+  // does not lose the record. Its id keys the ledger; without one, the
+  // project's directory does.
+  let key = 'cost:unknown'
+  try {
+    key = `session-cost:${await $.session.id()}`
+  } catch {
+    try {
+      key = `cost:${await $.session.cwd()}`
+    } catch {
+      // Neither answered: one shared ledger stands in.
+    }
+  }
+  costKey = key
+
+  const held = await read($, cost)
+  const saved = await $.store.get(costKey).catch(() => undefined)
+  if (held === null && typeof saved === 'number' && saved > 0) {
+    await update($, cost, () => ({ cny: saved, live: 0, pending: 0 }))
+  }
+
+  await readAppearance($)
+  watchAppearance($)
+}
+
 // The app's own control leads on the desktop; Claude Code's theme row decides
 // otherwise, and only where that leaves the pair open (`auto`, a row the host
 // does not report) does the machine's probe. Runs at session start, on a theme
@@ -218,24 +246,9 @@ async function settleStep($: EngineInterface, usage: TurnUsage): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-
-    // A fresh process starts with empty state: a conversation with a saved
-    // ledger picks its total back up, so a restart does not lose the record.
-    // The conversation's id keys it; without one, the project's directory does.
-    const id = await $.session.id().catch(() => undefined)
-    costKey =
-      id !== undefined
-        ? `session-cost:${id}`
-        : `cost:${await $.session.cwd().catch(() => 'unknown')}`
-
-    const held = await read($, cost)
-    const saved = await $.store.get(costKey).catch(() => undefined)
-    if (held === null && typeof saved === 'number' && saved > 0) {
-      await update($, cost, () => ({ cny: saved, live: 0, pending: 0 }))
-    }
-
-    await readAppearance($).catch(() => undefined)
-    watchAppearance($)
+    // Restored behind the first frame, never in front of it: the draw reads
+    // empty state as placeholders while this runs.
+    void boot($).catch(() => undefined)
     return result
   })
 

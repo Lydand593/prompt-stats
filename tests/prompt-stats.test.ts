@@ -339,10 +339,11 @@ for (const surface of SURFACES) {
       $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
     )
 
-    mock.clock(on, { now: NOW })
+    const clock = mock.clock(on, { now: NOW })
     mock.store(on, {})
 
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
     const ui = await $.ui.mount(footer(surface))
 
     await $.turn.complete({ ...DONE, usage: usage(1_000_000, 0, 0, 0) })
@@ -352,10 +353,12 @@ for (const surface of SURFACES) {
     // comes back from the store. /clear is an end that takes the ledger with it.
     await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
     expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
 
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
     expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
   })
 }
