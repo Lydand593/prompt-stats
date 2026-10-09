@@ -14,8 +14,9 @@ const appearance = atom({ plugin: 'prompt-stats', key: 'appearance' } as const, 
 
 // Characters of streamed output — the answer or the thinking, billed alike —
 // one output token is worth, so the yuan can move while a response streams.
-// The API's own count replaces it the moment the step lands.
-const CHARS_PER_TOKEN = 3
+// Low enough for CJK text (about a token a character) that the estimate never
+// runs ahead of the response's own count: the settled figure can only add.
+const CHARS_PER_TOKEN = 1.5
 const PENDING_TICK = 0.0005
 
 // No response has reported yet; the field keeps its width either way.
@@ -34,6 +35,10 @@ let engineLedgerKey: string | null = null
 // The highest total the ledger was ever seen holding — boot's read or a later
 // save. A turn that settles nothing must never write a smaller total over it.
 let ledgerFloor = 0
+
+// Each subagent turn's own settled sum, keyed by turn: the engine's figure for
+// the turn at its end can be less than its responses summed.
+const agentSums = new Map<string, number>()
 
 // The step names the model Claude Code asked for; the model that answers only
 // arrives with the response's usage. Price by the last one seen.
@@ -341,7 +346,32 @@ export const register: Register = on => {
   // response as its usage lands, and hand the engine's own result back whole.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) {
-      return yield* next(e)
+      // A subagent's turn shows nothing of its own, but its responses are
+      // billed; sum them as they land so its end can use the real total.
+      const source = next(e)[Symbol.asyncIterator]()
+      let result: TurnStepResult | undefined
+
+      for (;;) {
+        const piece = await source.next()
+
+        if (piece.done === true) {
+          result = piece.value
+          break
+        }
+
+        const chunk = piece.value
+
+        if (chunk.kind === 'stop' && chunk.usage !== null) {
+          const rates = ratesFor(chunk.usage.model, await $.clock.now())
+          if (rates !== null) {
+            agentSums.set(e.turnId, (agentSums.get(e.turnId) ?? 0) + costOf(chunk.usage, rates))
+          }
+        }
+
+        yield chunk
+      }
+
+      return result
     }
 
     const rates = ratesFor(answered, await $.clock.now())
@@ -409,16 +439,20 @@ export const register: Register = on => {
         const spent = costOf(usage, rates)
 
         if (isMain) {
-          // The turn's own total is the whole truth: the steps' running sum was
-          // only the display, so it gives way to it rather than adding to it.
+          // The responses' own counted sum leads; the engine's turn figure is
+          // taken only when it is the larger (a chatty turn's usage has been
+          // seen to report less than its responses settled for, and only the
+          // larger figure can be right).
           await update($, cost, previous => ({
-            cny: (previous?.cny ?? 0) + spent,
+            cny: (previous?.cny ?? 0) + Math.max(previous?.live ?? 0, spent),
             live: 0,
             pending: 0,
           }))
         } else {
+          const own = agentSums.get(e.turnId) ?? 0
+          agentSums.delete(e.turnId)
           await update($, cost, previous => ({
-            cny: (previous?.cny ?? 0) + spent,
+            cny: (previous?.cny ?? 0) + Math.max(own, spent),
             live: previous?.live ?? 0,
             pending: previous?.pending ?? 0,
           }))
@@ -437,6 +471,10 @@ export const register: Register = on => {
         live: 0,
         pending: 0,
       }))
+    }
+
+    if (!isMain) {
+      agentSums.delete(e.turnId)
     }
 
     if (isMain) {

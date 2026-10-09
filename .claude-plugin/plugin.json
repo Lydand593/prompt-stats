@@ -1,7 +1,7 @@
 {
   "name": "prompt-stats",
   "displayName": "Prompt Stats",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Live session cost (DeepSeek rates) and prompt-cache hit rate on the prompt footer, following the light/dark appearance.",
   "author": {
     "name": "liyidong"

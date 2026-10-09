@@ -249,14 +249,14 @@ for (const surface of SURFACES) {
       chunks.push(piece.value)
 
       if (chunks.length === 1) {
-        // The thinking streams too, and is billed: 30000 characters at three to
-        // a token, four yuan a million: 0.04.
-        expect(await ui.find({ type: 'Text', text: /^¥  0\.040$/ })).toBeDefined()
+        // The thinking streams too, and is billed: 30000 characters at one and
+        // a half to a token, four yuan a million: 0.08.
+        expect(await ui.find({ type: 'Text', text: /^¥  0\.080$/ })).toBeDefined()
       }
 
       if (chunks.length === 2) {
-        // The answer's 75000 characters carry the estimate to 0.14.
-        expect(await ui.find({ type: 'Text', text: /^¥  0\.140$/ })).toBeDefined()
+        // The answer's 75000 characters carry the estimate to 0.28.
+        expect(await ui.find({ type: 'Text', text: /^¥  0\.280$/ })).toBeDefined()
       }
     }
 
@@ -291,9 +291,9 @@ for (const surface of SURFACES) {
 
     const source = $.turn.step(STEP)[Symbol.asyncIterator]()
 
-    // The running estimate first: 75 000 characters at three to a token.
+    // The running estimate first: 75 000 characters at one and a half to a token.
     await source.next()
-    expect(await ui.find({ type: 'Text', text: /^¥  0\.100$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^¥  0\.200$/ })).toBeDefined()
 
     // The response's own counts land on its stop chunk, mid-turn: 0.02 for the
     // million read plus 4 for the million answered, the estimate under them.
@@ -301,7 +301,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^缓存命中率100.0%$/ })).toBeDefined()
 
-    // The turn's total replaces the running sum, never adds to it.
+    // The turn's own figure matches the settled sum: no double count, no loss.
     const last = await source.next()
     expect(last.done).toBe(true)
     await $.turn.complete({ ...DONE, usage: counted })
@@ -343,6 +343,71 @@ for (const surface of SURFACES) {
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
     expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
+  })
+
+  test(`a turn's settled responses lead its own accounting (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    // A million read at the hit rate, a million answered at the output rate:
+    // the step's own count, which the turn's figure must not undercut.
+    const rich = usage(0, 1_000_000, 0, 1_000_000)
+    const cheap = usage(0, 0, 0, 5_000)
+    let stepUsage = rich
+    let stepTurn = 'a'
+
+    on('turn.step', async function* () {
+      yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage: stepUsage }
+      return { ...ANSWER, turnId: stepTurn, usage: stepUsage }
+    })
+
+    mock.clock(on, { now: NOW })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    const ui = await $.ui.mount(footer(surface))
+
+    // The turn reports less than the response settled for: the settled sum stands.
+    const first = $.turn.step({ ...STEP, turnId: 'a' })[Symbol.asyncIterator]()
+    await first.next()
+    await first.next()
+    await $.turn.complete({ ...DONE, turnId: 'a', usage: cheap })
+    expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
+
+    // The turn reports more: the larger figure is taken.
+    stepUsage = cheap
+    stepTurn = 'b'
+    const second = $.turn.step({ ...STEP, turnId: 'b' })[Symbol.asyncIterator]()
+    await second.next()
+    await second.next()
+    await $.turn.complete({ ...DONE, turnId: 'b', usage: rich })
+    expect(await ui.find({ type: 'Text', text: /^¥  8\.040$/ })).toBeDefined()
+  })
+
+  test(`a subagent's responses are summed, not just its closing figure (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    // A million uncached input tokens: a yuan at the miss rate.
+    const work = usage(1_000_000, 0, 0, 0)
+    on('turn.step', async function* () {
+      yield { kind: 'stop' as const, stopReason: 'end_turn' as const, usage: work }
+      return { ...ANSWER, turnId: 'sub', usage: work }
+    })
+
+    mock.clock(on, { now: NOW })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    const ui = await $.ui.mount(footer(surface))
+
+    const source = $.turn.step({ ...STEP, turnId: 'sub', agentId: 'a1' })[Symbol.asyncIterator]()
+    await source.next()
+    await source.next()
+    await $.turn.complete({ ...DONE, turnId: 'sub', agentId: 'a1', usage: usage(0, 0, 0, 5_000) })
+    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
   })
 
   test(`the ledger follows the app's session id through engine churn (${surface})`, async ($, on) => {
