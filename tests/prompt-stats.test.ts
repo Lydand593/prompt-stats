@@ -7,7 +7,7 @@ import type {
   TurnUsage,
 } from 'claude-code'
 
-import { appearanceOf, chosenAppearance, tint } from '../hooks/color'
+import { appearanceOf, tint } from '../hooks/color'
 import { costOf, ratesFor, shownCost } from '../hooks/cost'
 import { linuxDark, macDark, winDark } from '../hooks/platform'
 
@@ -54,25 +54,18 @@ test('the hit rate ramp runs red to amber to mint, in either appearance', async 
 })
 
 test('the appearance follows the setting, and the machine under auto', async () => {
-  expect(appearanceOf('dark', null)).toBe('dark')
+  // The setting wins outright, even against the machine's answer.
+  expect(appearanceOf('dark', false)).toBe('dark')
   expect(appearanceOf('light', true)).toBe('light')
+  // Its variants count by what they start with.
+  expect(appearanceOf('light-daltonized', true)).toBe('light')
+  expect(appearanceOf('dark-ansi', false)).toBe('dark')
+  // `auto` asks the machine.
   expect(appearanceOf('auto', true)).toBe('dark')
   expect(appearanceOf('auto', false)).toBe('light')
   // The probe failed, or there is no theme row: the dark pair stands.
   expect(appearanceOf('auto', null)).toBe('dark')
   expect(appearanceOf(undefined, null)).toBe('dark')
-})
-
-test('the desktop window follows the machine; a terminal follows the row', async () => {
-  // The row says dark while the machine says light: the window is light.
-  expect(chosenAppearance('desktop', 'dark', false)).toBe('light')
-  expect(chosenAppearance('desktop', 'light', true)).toBe('dark')
-  // A terminal draws with the row exactly, whatever the machine says.
-  expect(chosenAppearance('terminal', 'dark', false)).toBe('dark')
-  expect(chosenAppearance('terminal', undefined, true)).toBe('dark')
-  // No answer from the machine: the row stands, `auto` falling back to dark.
-  expect(chosenAppearance('desktop', 'light', null)).toBe('light')
-  expect(chosenAppearance('desktop', undefined, null)).toBe('dark')
 })
 
 test(`each platform's probe reads its own way, and silence is not an answer`, async () => {

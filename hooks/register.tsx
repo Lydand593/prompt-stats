@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from 'claude-code'
 
 import type { CostStats, TurnStats } from '../types'
-import { chosenAppearance, tint } from './color'
+import { appearanceOf, tint } from './color'
 import { costOf, ratesFor, shownCost } from './cost'
 import { linuxDark, macDark, winDark } from './platform'
 
@@ -24,11 +24,6 @@ let streamed = 0
 // The step names the model Claude Code asked for; the model that answers only
 // arrives with the response's usage. Price by the last one seen.
 let answered = 'deepseek-flash'
-
-// Which surface draws the line; `session.start` does not say, the first draw
-// does. It picks which signal decides the light/dark pair — see
-// `chosenAppearance`.
-let surface: string | null = null
 
 // The machine's own appearance, asked of each platform in turn; the first
 // probe that answers decides, and none answering leaves it unknown.
@@ -54,22 +49,21 @@ async function probeSystemDark($: EngineInterface): Promise<boolean | null> {
   )
 }
 
-// Reads the theme row and, when the pair needs the machine, the platform probe;
-// the choice itself is `chosenAppearance`'s. Runs at session start, on a theme
-// change, as each turn lands, and on the poll below — switching the machine's
-// appearance mid-session is caught by that poll alone.
+// Reads the theme row and, only when it leaves the pair open (`auto`, a row the
+// host does not report), the platform probe. Runs at session start, on a theme
+// change, as each turn lands, and on the poll below — the machine's own switch
+// under `auto` is caught by that poll alone.
 async function readAppearance($: EngineInterface): Promise<void> {
   const rows = await $.config.list().catch(() => undefined)
   const setting = rows?.find(row => row.key === 'theme')?.value
-  const desktop = surface === 'desktop'
 
   let systemDark: boolean | null = null
 
-  if (desktop || (setting !== 'light' && setting !== 'dark')) {
+  if (setting !== 'light' && setting !== 'dark') {
     systemDark = await probeSystemDark($)
   }
 
-  const look = chosenAppearance(surface, setting, systemDark)
+  const look = appearanceOf(setting, systemDark)
 
   const held = await read($, appearance)
   if (held !== look) {
@@ -80,15 +74,18 @@ async function readAppearance($: EngineInterface): Promise<void> {
   }
 }
 
-// The machine's appearance can change while the session runs, and the desktop
-// app follows it live; a quiet poll catches the switch so the line repaints.
+// The machine's appearance can change while the session runs and nobody asks
+// anything of it, so a quiet poll re-reads the pair and asks for the draw every
+// period — the ask is what makes the switch show without a turn.
 const APPEARANCE_POLL_MS = 5_000
 let appearancePoll: Timer | null = null
 
 function watchAppearance($: EngineInterface): void {
   if (appearancePoll !== null) return
   appearancePoll = $.clock.every(APPEARANCE_POLL_MS, () => {
-    void readAppearance($).catch(() => undefined)
+    void readAppearance($)
+      .catch(() => undefined)
+      .then(() => $.ui.invalidate('ui.render'))
   })
 }
 
@@ -283,11 +280,6 @@ export const register: Register = on => {
   // The prompt footer's own site: the line under the prompt box. Drawn from the
   // first frame; a figure not yet reported reads as a placeholder, not absence.
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
-    if (surface === null) {
-      surface = e.surface
-      void readAppearance($).catch(() => undefined)
-    }
-
     const last = await read($, turn)
     const spent = await read($, cost)
     const look = (await read($, appearance)) ?? 'dark'

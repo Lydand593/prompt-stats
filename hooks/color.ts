@@ -29,20 +29,13 @@ export function tint(hit: number, appearance: Appearance): string {
 }
 
 export function appearanceOf(setting: unknown, systemDark: boolean | null): Appearance {
-  if (setting === 'light') return 'light'
-  if (setting === 'dark') return 'dark'
+  // Claude's own setting wins; its variants (`light-daltonized`, `dark-ansi`)
+  // count by what they start with.
+  if (typeof setting === 'string') {
+    if (setting.startsWith('light')) return 'light'
+    if (setting.startsWith('dark')) return 'dark'
+  }
   // `auto`: the host reports the setting, not the appearance it resolved to, so
   // the machine's own answer stands in for it.
   return systemDark === false ? 'light' : 'dark'
-}
-
-export function chosenAppearance(
-  surface: string | null,
-  setting: unknown,
-  systemDark: boolean | null,
-): Appearance {
-  // The desktop app's window follows the machine, whatever its theme row says;
-  // a terminal draws with the row exactly.
-  if (surface === 'desktop' && systemDark !== null) return systemDark ? 'dark' : 'light'
-  return appearanceOf(setting, systemDark)
 }
