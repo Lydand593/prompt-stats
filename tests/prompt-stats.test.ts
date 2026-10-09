@@ -345,6 +345,42 @@ for (const surface of SURFACES) {
     expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
   })
 
+  test(`the ledger follows the app's session id through engine churn (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    const clock = mock.clock(on, { now: NOW })
+    // The desktop app answers a stable per-conversation id; the engine's own
+    // id (absent in this kit) is what churns and must not be needed.
+    mock.env(on, { CLAUDE_CODE_HOST_SESSION_ID: 'local_app_conversation' })
+    mock.store(on, {})
+
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
+    const ui = await $.ui.mount(footer(surface))
+
+    await $.turn.complete({ ...DONE, usage: usage(1_000_000, 0, 0, 0) })
+    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+
+    // The app swaps the engine under the conversation (a switch away and back,
+    // an interrupted turn's respawn): a fresh process, and the money returns
+    // under the stable id.
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+
+    // /clear still wipes it for good, across the same churn.
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
+  })
+
   test(`the appearance poll runs underneath without disturbing the line (${surface})`, async ($, on) => {
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     on('turn.complete', () => ({ text: '' }))
