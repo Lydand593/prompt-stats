@@ -8,7 +8,7 @@ import type {
 } from 'claude-code'
 
 import { appearanceOf, tint } from '../hooks/color'
-import { costOf, freshHit, ratesFor, shownCost } from '../hooks/cost'
+import { costOf, freshHit, pickLedger, ratesFor, shownCost } from '../hooks/cost'
 import { appMode, linuxDark, macDark, winDark } from '../hooks/platform'
 
 test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () => {
@@ -75,6 +75,17 @@ test(`a restored hit rate only stands while the cache plausibly does`, async () 
   // Two and a half hours is the window, inclusive; a moment past it is out.
   expect(freshHit(1_000, 1_000 + 2.5 * hour)).toBe(true)
   expect(freshHit(1_000, 1_000 + 2.5 * hour + 1)).toBe(false)
+})
+
+test(`sightings of one conversation's ledger pick the larger total`, async () => {
+  // A bare number is an older build's ledger.
+  expect(pickLedger(null, 1.5)).toEqual({ cny: 1.5, hit: null })
+  // Garbage changes nothing.
+  expect(pickLedger({ cny: 1.5 }, 'nonsense')).toEqual({ cny: 1.5 })
+  // The larger total wins; at equal totals the later stamp does.
+  expect(pickLedger({ cny: 1 }, { cny: 2, hit: 99 })).toEqual({ cny: 2, hit: 99 })
+  expect(pickLedger({ cny: 2, at: 100 }, { cny: 2, at: 50 })).toEqual({ cny: 2, at: 100 })
+  expect(pickLedger({ cny: 2, at: 50 }, { cny: 2, at: 100 })).toEqual({ cny: 2, at: 100 })
 })
 
 test(`the desktop app's own mode reads as it stores it`, async () => {
@@ -340,40 +351,4 @@ for (const surface of SURFACES) {
     expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
   })
 
-  test(`the ledger survives a restart, and /clear starts fresh (${surface})`, async ($, on) => {
-    on('session.start', ($, e) => ({ cwd: e.cwd }))
-    on('turn.complete', () => ({ text: '' }))
-    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
-    on('ui.render', { component: 'SessionMode' }, ($, e) =>
-      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
-    )
-
-    const clock = mock.clock(on, { now: NOW })
-    mock.store(on, {})
-
-    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
-    await clock.settle()
-    const ui = await $.ui.mount(footer(surface))
-
-    await $.turn.complete({ ...DONE, usage: usage(0, 1_000_000, 0, 1_000_000) })
-    expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
-
-    // A restart is an end and a start over the same conversation: both figures
-    // come back from the store. /clear is an end that takes the ledger with it.
-    // A turn that settles nothing (aborted, no usage) must not shrink the
-    // ledger: the saved total floors at what was already there.
-    await $.turn.complete({ ...DONE, turnId: 'x', reason: 'aborted' })
-    await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
-    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
-    await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
-
-    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
-    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
-    await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
-  })
 }

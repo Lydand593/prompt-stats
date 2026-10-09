@@ -4,7 +4,8 @@ import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from
 import type { CostStats, TurnStats } from '../types'
 import type { Appearance } from './color'
 import { appearanceOf, tint } from './color'
-import { costOf, freshHit, ratesFor, shownCost } from './cost'
+import { costOf, freshHit, pickLedger, ratesFor, shownCost } from './cost'
+import type { Ledger } from './cost'
 import { appMode, linuxDark, macDark, winDark } from './platform'
 
 const turn = atom({ plugin: 'prompt-stats', key: 'turn' } as const, null)
@@ -115,21 +116,24 @@ async function readAppMode($: EngineInterface): Promise<Appearance | null> {
 // conversation left in the store, and the appearance with its poll.
 async function boot($: EngineInterface): Promise<void> {
   // A conversation with a saved ledger picks its total back up, so a restart
-  // does not lose the record. Its id keys the ledger; without one, the
-  // project's directory does.
-  let key = 'cost:unknown'
+  // does not lose the record. Its id keys the ledger — and without an id
+  // nothing is kept at all: sharing one ledger across a directory's
+  // conversations would mix their bills, which this must never do.
+  let key: string | null = null
   try {
     key = `session-cost:${await $.session.id()}`
   } catch {
-    try {
-      key = `cost:${await $.session.cwd()}`
-    } catch {
-      // Neither answered: one shared ledger stands in.
-    }
+    // No conversation id, no ledger.
   }
   costKey = key
 
-  const saved = await readLedger($, costKey)
+  if (key === null) {
+    await readAppearance($)
+    watchAppearance($)
+    return
+  }
+
+  const saved = await readLedger($, key)
   const cny = saved?.cny
   const hit = saved?.hit ?? null
   const at = saved?.at ?? null
@@ -161,36 +165,12 @@ async function boot($: EngineInterface): Promise<void> {
   watchAppearance($)
 }
 
-type Ledger = { cny: number; hit?: number | null; at?: number }
-
 // The host scopes its store per plugin identity, and a session can be drawn to
 // either the marketplace's copy or the folder's ("inline") one across reloads;
-// the sibling store files of this plugin are read too and the best entry wins.
-// The ledger is `{ cny, hit, at }`; an older build stored the bare cost number.
+// the sibling store files of this plugin are read too and the best entry for
+// this conversation wins.
 async function readLedger($: EngineInterface, key: string): Promise<Ledger | null> {
-  const best = (current: Ledger | null, candidate: unknown): Ledger | null => {
-    const record =
-      typeof candidate === 'object' && candidate !== null
-        ? (candidate as { cny?: unknown; hit?: unknown; at?: unknown })
-        : null
-    const cny =
-      typeof candidate === 'number'
-        ? candidate
-        : typeof record?.cny === 'number'
-          ? record.cny
-          : undefined
-    if (cny === undefined) return current
-    const entry: Ledger = {
-      cny,
-      hit: typeof record?.hit === 'number' ? record.hit : null,
-      at: typeof record?.at === 'number' ? record.at : undefined,
-    }
-    if (current === null) return entry
-    if (entry.cny !== current.cny) return entry.cny > current.cny ? entry : current
-    return (entry.at ?? 0) > (current.at ?? 0) ? entry : current
-  }
-
-  let found = best(null, await $.store.get(key).catch(() => undefined))
+  let found = pickLedger(null, await $.store.get(key).catch(() => undefined))
 
   const home = await $.env.get('HOME').catch(() => undefined)
   if (home === undefined) return found
@@ -207,7 +187,7 @@ async function readLedger($: EngineInterface, key: string): Promise<Ledger | nul
     try {
       const parsed: unknown = JSON.parse(text)
       if (typeof parsed !== 'object' || parsed === null) continue
-      found = best(found, (parsed as Record<string, unknown>)[key])
+      found = pickLedger(found, (parsed as Record<string, unknown>)[key])
     } catch {
       // A file mid-write or foreign: skip it.
     }

@@ -48,6 +48,36 @@ export function freshHit(at: number | null, now: number): boolean {
 
 export type Spend = { cny?: number; live?: number; pending?: number }
 
+// One conversation's ledger entry as the store carries it; an older build
+// stored the bare cost number, and both shapes read back here.
+export type Ledger = { cny: number; hit?: number | null; at?: number }
+
+// The best of two sightings of one conversation's ledger: the larger total,
+// or at equal totals the later stamp. Only ever for the same conversation.
+export function pickLedger(current: Ledger | null, candidate: unknown): Ledger | null {
+  const record =
+    typeof candidate === 'object' && candidate !== null
+      ? (candidate as { cny?: unknown; hit?: unknown; at?: unknown })
+      : null
+  const cny =
+    typeof candidate === 'number'
+      ? candidate
+      : typeof record?.cny === 'number'
+        ? record.cny
+        : undefined
+  if (cny === undefined) return current
+
+  const entry: Ledger = {
+    cny,
+    hit: typeof record?.hit === 'number' ? record.hit : null,
+    at: typeof record?.at === 'number' ? record.at : undefined,
+  }
+
+  if (current === null) return entry
+  if (entry.cny !== current.cny) return entry.cny > current.cny ? entry : current
+  return (entry.at ?? 0) > (current.at ?? 0) ? entry : current
+}
+
 // A reload keeps the host's state, so what is stored may predate the shape this
 // code writes; a missing part reads as nothing rather than NaN. `cny` sums the
 // settled turns, `live` the running turn's landed responses, `pending` the
