@@ -361,6 +361,9 @@ for (const surface of SURFACES) {
 
     // A restart is an end and a start over the same conversation: both figures
     // come back from the store. /clear is an end that takes the ledger with it.
+    // A turn that settles nothing (aborted, no usage) must not shrink the
+    // ledger: the saved total floors at what was already there.
+    await $.turn.complete({ ...DONE, turnId: 'x', reason: 'aborted' })
     await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
     await clock.settle()

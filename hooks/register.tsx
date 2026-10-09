@@ -26,6 +26,10 @@ let streamed = 0
 // process; set once the session's id is known.
 let costKey: string | null = null
 
+// The highest total the ledger was ever seen holding — boot's read or a later
+// save. A turn that settles nothing must never write a smaller total over it.
+let ledgerFloor = 0
+
 // The step names the model Claude Code asked for; the model that answers only
 // arrives with the response's usage. Price by the last one seen.
 let answered = 'deepseek-flash'
@@ -125,30 +129,91 @@ async function boot($: EngineInterface): Promise<void> {
   }
   costKey = key
 
-  const saved = await $.store.get(costKey).catch(() => undefined)
-  // The ledger is `{ cny, hit, at }`; an older build stored the bare cost
-  // number, and both shapes read back here.
-  const record =
-    typeof saved === 'object' && saved !== null
-      ? (saved as { cny?: unknown; hit?: unknown; at?: unknown })
-      : null
-  const cny =
-    typeof saved === 'number' ? saved : typeof record?.cny === 'number' ? record.cny : undefined
-  const hit = typeof record?.hit === 'number' ? record.hit : null
-  const at = typeof record?.at === 'number' ? record.at : null
+  const saved = await readLedger($, costKey)
+  const cny = saved?.cny
+  const hit = saved?.hit ?? null
+  const at = saved?.at ?? null
+  ledgerFloor = cny ?? 0
 
+  // A held zero is never a settled total worth keeping (an aborted turn can
+  // write one), so it gives way to the ledger like an empty state does.
   const held = await read($, cost)
-  if (held === null && cny !== undefined && cny > 0) {
+  if ((held === null || (held.cny ?? 0) === 0) && cny !== undefined && cny > 0) {
     await update($, cost, () => ({ cny: cny as number, live: 0, pending: 0 }))
   }
 
   const heldTurn = await read($, turn)
-  if (heldTurn === null && hit !== null && freshHit(at, await $.clock.now())) {
+  if (
+    (heldTurn === null || heldTurn.hitPercent === null) &&
+    hit !== null &&
+    freshHit(at, await $.clock.now())
+  ) {
     await update($, turn, () => ({ hitPercent: hit as number }))
+  }
+
+  // What was just read stands written under this identity too, so the two
+  // ledgers converge instead of drifting on every load-path change.
+  if (saved !== null) {
+    await $.store.set(costKey, saved).catch(() => undefined)
   }
 
   await readAppearance($)
   watchAppearance($)
+}
+
+type Ledger = { cny: number; hit?: number | null; at?: number }
+
+// The host scopes its store per plugin identity, and a session can be drawn to
+// either the marketplace's copy or the folder's ("inline") one across reloads;
+// the sibling store files of this plugin are read too and the best entry wins.
+// The ledger is `{ cny, hit, at }`; an older build stored the bare cost number.
+async function readLedger($: EngineInterface, key: string): Promise<Ledger | null> {
+  const best = (current: Ledger | null, candidate: unknown): Ledger | null => {
+    const record =
+      typeof candidate === 'object' && candidate !== null
+        ? (candidate as { cny?: unknown; hit?: unknown; at?: unknown })
+        : null
+    const cny =
+      typeof candidate === 'number'
+        ? candidate
+        : typeof record?.cny === 'number'
+          ? record.cny
+          : undefined
+    if (cny === undefined) return current
+    const entry: Ledger = {
+      cny,
+      hit: typeof record?.hit === 'number' ? record.hit : null,
+      at: typeof record?.at === 'number' ? record.at : undefined,
+    }
+    if (current === null) return entry
+    if (entry.cny !== current.cny) return entry.cny > current.cny ? entry : current
+    return (entry.at ?? 0) > (current.at ?? 0) ? entry : current
+  }
+
+  let found = best(null, await $.store.get(key).catch(() => undefined))
+
+  const home = await $.env.get('HOME').catch(() => undefined)
+  if (home === undefined) return found
+
+  const dir = `${home}/.claude/plugins/store`
+  const listings = await $.fs.list(dir).catch(() => undefined)
+  if (listings === undefined) return found
+
+  for (const listing of listings) {
+    if (listing.kind !== 'file') continue
+    if (!listing.name.startsWith('prompt-stats_') || !listing.name.endsWith('.json')) continue
+    const text = await $.fs.read(`${dir}/${listing.name}`).catch(() => undefined)
+    if (text === undefined) continue
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (typeof parsed !== 'object' || parsed === null) continue
+      found = best(found, (parsed as Record<string, unknown>)[key])
+    } catch {
+      // A file mid-write or foreign: skip it.
+    }
+  }
+
+  return found
 }
 
 // The app's own control leads on the desktop; Claude Code's theme row decides
@@ -385,16 +450,15 @@ export const register: Register = on => {
         await showHit($, usage)
       }
 
-      // Write the conversation's ledger where a restart can find it.
+      // Write the conversation's ledger where a restart can find it. The total
+      // only ever grows: a turn that settled nothing must not shrink it.
       if (costKey !== null) {
         const settled = await read($, cost)
         const reading = await read($, turn)
+        const cny = Math.max(ledgerFloor, settled?.cny ?? 0)
+        ledgerFloor = cny
         await $.store
-          .set(costKey, {
-            cny: settled?.cny ?? 0,
-            hit: reading?.hitPercent ?? null,
-            at: await $.clock.now(),
-          })
+          .set(costKey, { cny, hit: reading?.hitPercent ?? null, at: await $.clock.now() })
           .catch(() => undefined)
       }
     }
@@ -409,6 +473,7 @@ export const register: Register = on => {
     // a switch keeps it, so the record survives restarts.
     if (costKey !== null && e.reason === 'clear') {
       await $.store.delete(costKey).catch(() => undefined)
+      ledgerFloor = 0
     }
 
     await update($, turn, () => null)
