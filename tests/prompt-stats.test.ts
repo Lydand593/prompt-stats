@@ -15,10 +15,11 @@ test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () =>
   const offPeak = Date.parse('2026-10-10T12:00:00Z')
   expect(ratesFor('deepseek-flash', offPeak)).toEqual({ hit: 0.02, miss: 1, out: 4 })
   expect(ratesFor('deepseek-v4-pro', offPeak)).toEqual({ hit: 0.15, miss: 4.5, out: 13.5 })
-  // A model Claude Code is not running against DeepSeek: nothing to price.
-  expect(ratesFor('claude-opus-5-5', offPeak)).toBeNull()
   // A gateway's own spelling still prices.
   expect(ratesFor('DeepSeek-V4.1-Flash', offPeak)).toEqual({ hit: 0.02, miss: 1, out: 4 })
+  // A gateway that answers under the app's requested id (a third-party
+  // DeepSeek service in front of `claude-sonnet`) prices at the flash rows.
+  expect(ratesFor('claude-sonnet', offPeak)).toEqual({ hit: 0.02, miss: 1, out: 4 })
 })
 
 test(`a figure stored before this shape reads as a number, not NaN`, async () => {

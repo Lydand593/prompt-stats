@@ -15,9 +15,11 @@ function isPeak(at: number): boolean {
 }
 
 export function ratesFor(model: string, at: number): Rates | null {
-  // Gateways spell the id every way: `DeepSeek-V4.1-Flash`, `deepseek-chat`.
+  // Third-party gateways bill DeepSeek models behind ids of their own (the
+  // desktop app asks for `claude-sonnet` and the gateway answers the usage
+  // under that name), so every model is priced: DeepSeek's table, the pro
+  // rows only where the id says so.
   const id = model.toLowerCase()
-  if (!id.startsWith('deepseek')) return null
   const base = id.includes('pro') ? PRO : FLASH
   const factor = isPeak(at) ? 2 : 1
   return { hit: base.hit * factor, miss: base.miss * factor, out: base.out * factor }

@@ -316,6 +316,9 @@ async function settleStep($: EngineInterface, usage: TurnUsage): Promise<void> {
       pending: 0,
     }))
   } else {
+    // An unpriced model stops the estimate with it: no fake climb on rates
+    // the response is not billed at.
+    answered = usage.model
     await update($, cost, previous => ({
       cny: previous?.cny ?? 0,
       live: previous?.live ?? 0,
