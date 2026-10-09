@@ -4,7 +4,7 @@ import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from
 import type { CostStats, TurnStats } from '../types'
 import type { Appearance } from './color'
 import { appearanceOf, tint } from './color'
-import { costOf, ratesFor, shownCost } from './cost'
+import { costOf, freshHit, ratesFor, shownCost } from './cost'
 import { appMode, linuxDark, macDark, winDark } from './platform'
 
 const turn = atom({ plugin: 'prompt-stats', key: 'turn' } as const, null)
@@ -126,12 +126,16 @@ async function boot($: EngineInterface): Promise<void> {
   costKey = key
 
   const saved = await $.store.get(costKey).catch(() => undefined)
-  // The ledger is `{ cny, hit }`; an older build stored the bare cost number,
-  // and both shapes read back here.
+  // The ledger is `{ cny, hit, at }`; an older build stored the bare cost
+  // number, and both shapes read back here.
   const record =
-    typeof saved === 'object' && saved !== null ? (saved as { cny?: unknown; hit?: unknown }) : null
-  const cny = typeof saved === 'number' ? saved : typeof record?.cny === 'number' ? record.cny : undefined
+    typeof saved === 'object' && saved !== null
+      ? (saved as { cny?: unknown; hit?: unknown; at?: unknown })
+      : null
+  const cny =
+    typeof saved === 'number' ? saved : typeof record?.cny === 'number' ? record.cny : undefined
   const hit = typeof record?.hit === 'number' ? record.hit : null
+  const at = typeof record?.at === 'number' ? record.at : null
 
   const held = await read($, cost)
   if (held === null && cny !== undefined && cny > 0) {
@@ -139,7 +143,7 @@ async function boot($: EngineInterface): Promise<void> {
   }
 
   const heldTurn = await read($, turn)
-  if (heldTurn === null && hit !== null) {
+  if (heldTurn === null && hit !== null && freshHit(at, await $.clock.now())) {
     await update($, turn, () => ({ hitPercent: hit as number }))
   }
 
@@ -386,7 +390,11 @@ export const register: Register = on => {
         const settled = await read($, cost)
         const reading = await read($, turn)
         await $.store
-          .set(costKey, { cny: settled?.cny ?? 0, hit: reading?.hitPercent ?? null })
+          .set(costKey, {
+            cny: settled?.cny ?? 0,
+            hit: reading?.hitPercent ?? null,
+            at: await $.clock.now(),
+          })
           .catch(() => undefined)
       }
     }

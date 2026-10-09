@@ -37,6 +37,15 @@ export function costOf(usage: Tokens, rates: Rates): number {
   )
 }
 
+// A restored hit rate is a measurement, not a ledger: it only stands while
+// the provider's cache plausibly does. DeepSeek clears an unused cache within
+// hours; two and a half of them is the window this keeps.
+export const HIT_FRESH_MS = 2.5 * 60 * 60 * 1000
+
+export function freshHit(at: number | null, now: number): boolean {
+  return at !== null && now - at <= HIT_FRESH_MS
+}
+
 export type Spend = { cny?: number; live?: number; pending?: number }
 
 // A reload keeps the host's state, so what is stored may predate the shape this

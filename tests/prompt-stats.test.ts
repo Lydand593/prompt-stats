@@ -8,7 +8,7 @@ import type {
 } from 'claude-code'
 
 import { appearanceOf, tint } from '../hooks/color'
-import { costOf, ratesFor, shownCost } from '../hooks/cost'
+import { costOf, freshHit, ratesFor, shownCost } from '../hooks/cost'
 import { appMode, linuxDark, macDark, winDark } from '../hooks/platform'
 
 test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () => {
@@ -66,6 +66,15 @@ test('the appearance follows the setting, and the machine under auto', async () 
   // The probe failed, or there is no theme row: the dark pair stands.
   expect(appearanceOf('auto', null)).toBe('dark')
   expect(appearanceOf(undefined, null)).toBe('dark')
+})
+
+test(`a restored hit rate only stands while the cache plausibly does`, async () => {
+  const hour = 60 * 60 * 1000
+  // No stamp, no trust.
+  expect(freshHit(null, 1_000)).toBe(false)
+  // Two and a half hours is the window, inclusive; a moment past it is out.
+  expect(freshHit(1_000, 1_000 + 2.5 * hour)).toBe(true)
+  expect(freshHit(1_000, 1_000 + 2.5 * hour + 1)).toBe(false)
 })
 
 test(`the desktop app's own mode reads as it stores it`, async () => {
