@@ -158,7 +158,7 @@ async function boot($: EngineInterface): Promise<void> {
   // What was just read stands written under this identity too, so the two
   // ledgers converge instead of drifting on every load-path change.
   if (saved !== null) {
-    await $.store.set(costKey, saved).catch(() => undefined)
+    await $.store.set(key, saved).catch(() => undefined)
   }
 
   await readAppearance($)

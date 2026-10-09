@@ -85,7 +85,7 @@ test(`sightings of one conversation's ledger pick the larger total`, async () =>
   // The larger total wins; at equal totals the later stamp does.
   expect(pickLedger({ cny: 1 }, { cny: 2, hit: 99 })).toEqual({ cny: 2, hit: 99 })
   expect(pickLedger({ cny: 2, at: 100 }, { cny: 2, at: 50 })).toEqual({ cny: 2, at: 100 })
-  expect(pickLedger({ cny: 2, at: 50 }, { cny: 2, at: 100 })).toEqual({ cny: 2, at: 100 })
+  expect(pickLedger({ cny: 2, at: 50 }, { cny: 2, at: 100 })).toEqual({ cny: 2, hit: null, at: 100 })
 })
 
 test(`the desktop app's own mode reads as it stores it`, async () => {
