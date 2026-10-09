@@ -2,9 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from 'claude-code'
 
 import type { CostStats, TurnStats } from '../types'
+import type { Appearance } from './color'
 import { appearanceOf, tint } from './color'
 import { costOf, ratesFor, shownCost } from './cost'
-import { linuxDark, macDark, winDark } from './platform'
+import { appMode, linuxDark, macDark, winDark } from './platform'
 
 const turn = atom({ plugin: 'prompt-stats', key: 'turn' } as const, null)
 const cost = atom({ plugin: 'prompt-stats', key: 'cost' } as const, null)
@@ -24,6 +25,10 @@ let streamed = 0
 // The step names the model Claude Code asked for; the model that answers only
 // arrives with the response's usage. Price by the last one seen.
 let answered = 'deepseek-flash'
+
+// Which surface draws the line; `session.start` does not say, the first draw
+// does. The desktop app's own mode is only read for it.
+let surface: string | null = null
 
 // The machine's own appearance, asked of each platform in turn; the first
 // probe that answers decides, and none answering leaves it unknown.
@@ -49,21 +54,71 @@ async function probeSystemDark($: EngineInterface): Promise<boolean | null> {
   )
 }
 
-// Reads the theme row and, only when it leaves the pair open (`auto`, a row the
-// host does not report), the platform probe. Runs at session start, on a theme
-// change, as each turn lands, and on the poll below — the machine's own switch
-// under `auto` is caught by that poll alone.
+// The desktop app keeps its own light/dark control in its `config.json`
+// (`userThemeMode`), separate from Claude Code's theme row; both installs'
+// files are candidates and the newest written one is the app that runs.
+// null: no app answered.
+async function readAppMode($: EngineInterface): Promise<Appearance | null> {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  const appData = await $.env.get('APPDATA').catch(() => undefined)
+
+  const candidates: string[] = []
+
+  if (home !== undefined) {
+    for (const app of ['Claude-3p', 'Claude']) {
+      candidates.push(`${home}/Library/Application Support/${app}/config.json`)
+      candidates.push(`${home}/.config/${app}/config.json`)
+    }
+  }
+  if (appData !== undefined) {
+    for (const app of ['Claude-3p', 'Claude']) {
+      candidates.push(`${appData}\\${app}\\config.json`)
+    }
+  }
+
+  let newest: { path: string; mtimeMs: number } | null = null
+
+  for (const path of candidates) {
+    const stat = await $.fs.stat(path).catch(() => undefined)
+    if (stat === undefined || stat.kind !== 'file') continue
+    if (newest === null || stat.mtimeMs > newest.mtimeMs) {
+      newest = { path, mtimeMs: stat.mtimeMs }
+    }
+  }
+
+  if (newest === null) return null
+
+  const text = await $.fs.read(newest.path).catch(() => undefined)
+  if (text === undefined) return null
+
+  try {
+    const parsed: unknown = JSON.parse(text)
+    const mode =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { userThemeMode?: unknown }).userThemeMode
+        : undefined
+    return appMode(mode)
+  } catch {
+    return null
+  }
+}
+
+// The app's own control leads on the desktop; Claude Code's theme row decides
+// otherwise, and only where that leaves the pair open (`auto`, a row the host
+// does not report) does the machine's probe. Runs at session start, on a theme
+// change, as each turn lands, and on the poll below — the app's and the
+// machine's own switches are caught by that poll alone.
 async function readAppearance($: EngineInterface): Promise<void> {
   const rows = await $.config.list().catch(() => undefined)
   const setting = rows?.find(row => row.key === 'theme')?.value
 
-  let systemDark: boolean | null = null
+  const mode = surface === 'desktop' ? await readAppMode($) : null
+  const systemDark =
+    mode === null && setting !== 'light' && setting !== 'dark'
+      ? await probeSystemDark($)
+      : null
 
-  if (setting !== 'light' && setting !== 'dark') {
-    systemDark = await probeSystemDark($)
-  }
-
-  const look = appearanceOf(setting, systemDark)
+  const look = mode ?? appearanceOf(setting, systemDark)
 
   const held = await read($, appearance)
   if (held !== look) {
@@ -280,6 +335,11 @@ export const register: Register = on => {
   // The prompt footer's own site: the line under the prompt box. Drawn from the
   // first frame; a figure not yet reported reads as a placeholder, not absence.
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
+    if (surface === null) {
+      surface = e.surface
+      void readAppearance($).catch(() => undefined)
+    }
+
     const last = await read($, turn)
     const spent = await read($, cost)
     const look = (await read($, appearance)) ?? 'dark'

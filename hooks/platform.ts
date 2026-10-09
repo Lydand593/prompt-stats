@@ -1,9 +1,19 @@
+import type { Appearance } from './color'
+
 // Whether the machine's own appearance is dark, as each platform's probe
 // answers it: macOS `defaults` (the key exists only while dark), Windows'
 // registry (AppsUseLightTheme is 0 while dark), Linux's gsettings (the colour
 // scheme names prefer-dark). A probe is undefined when it never ran; one that
 // ran carries its exit code and output. null: that platform did not answer.
 export type Probe = { exitCode: number; stdout: string } | undefined
+
+// The desktop app's own light/dark control, as its `config.json` stores it
+// under `userThemeMode`; anything else (`system`, absent) leaves it open.
+export function appMode(mode: unknown): Appearance | null {
+  if (mode === 'light') return 'light'
+  if (mode === 'dark') return 'dark'
+  return null
+}
 
 export function macDark(probe: Probe): boolean | null {
   if (probe === undefined) return null

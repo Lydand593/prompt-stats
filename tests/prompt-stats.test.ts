@@ -9,7 +9,7 @@ import type {
 
 import { appearanceOf, tint } from '../hooks/color'
 import { costOf, ratesFor, shownCost } from '../hooks/cost'
-import { linuxDark, macDark, winDark } from '../hooks/platform'
+import { appMode, linuxDark, macDark, winDark } from '../hooks/platform'
 
 test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () => {
   const offPeak = Date.parse('2026-10-10T12:00:00Z')
@@ -66,6 +66,15 @@ test('the appearance follows the setting, and the machine under auto', async () 
   // The probe failed, or there is no theme row: the dark pair stands.
   expect(appearanceOf('auto', null)).toBe('dark')
   expect(appearanceOf(undefined, null)).toBe('dark')
+})
+
+test(`the desktop app's own mode reads as it stores it`, async () => {
+  expect(appMode('light')).toBe('light')
+  expect(appMode('dark')).toBe('dark')
+  // `system`, an older spelling, or nothing: the choice stays open.
+  expect(appMode('system')).toBeNull()
+  expect(appMode(undefined)).toBeNull()
+  expect(appMode(3)).toBeNull()
 })
 
 test(`each platform's probe reads its own way, and silence is not an answer`, async () => {
