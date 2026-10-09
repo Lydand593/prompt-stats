@@ -8,7 +8,7 @@ import type {
 } from 'claude-code'
 
 import { appearanceOf, tint } from '../hooks/color'
-import { costOf, freshHit, pickLedger, ratesFor, shownCost } from '../hooks/cost'
+import { costOf, freshHit, ledgerKeyFor, pickLedger, ratesFor, shownCost } from '../hooks/cost'
 import { appMode, linuxDark, macDark, winDark } from '../hooks/platform'
 
 test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () => {
@@ -17,6 +17,8 @@ test(`the rates follow DeepSeek's own table (off-peak, a Saturday)`, async () =>
   expect(ratesFor('deepseek-v4-pro', offPeak)).toEqual({ hit: 0.15, miss: 4.5, out: 13.5 })
   // A model Claude Code is not running against DeepSeek: nothing to price.
   expect(ratesFor('claude-opus-5-5', offPeak)).toBeNull()
+  // A gateway's own spelling still prices.
+  expect(ratesFor('DeepSeek-V4.1-Flash', offPeak)).toEqual({ hit: 0.02, miss: 1, out: 4 })
 })
 
 test(`a figure stored before this shape reads as a number, not NaN`, async () => {
@@ -66,6 +68,17 @@ test('the appearance follows the setting, and the machine under auto', async () 
   // The probe failed, or there is no theme row: the dark pair stands.
   expect(appearanceOf('auto', null)).toBe('dark')
   expect(appearanceOf(undefined, null)).toBe('dark')
+})
+
+test(`the ledger key follows the app's stable session id, not the engine's`, async () => {
+  // The desktop app: its own id leads, and survives the engine being swapped.
+  expect(ledgerKeyFor('local_abc', 'eng1')).toBe('session-cost:local_abc')
+  expect(ledgerKeyFor('local_abc', 'eng2')).toBe('session-cost:local_abc')
+  // A terminal session has no app id: its engine id stands.
+  expect(ledgerKeyFor(undefined, 'eng1')).toBe('session-cost:eng1')
+  // Neither: no ledger at all.
+  expect(ledgerKeyFor(undefined, undefined)).toBeNull()
+  expect(ledgerKeyFor('', '')).toBeNull()
 })
 
 test(`a restored hit rate only stands while the cache plausibly does`, async () => {

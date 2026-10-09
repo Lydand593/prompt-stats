@@ -15,8 +15,10 @@ function isPeak(at: number): boolean {
 }
 
 export function ratesFor(model: string, at: number): Rates | null {
-  if (!model.startsWith('deepseek')) return null
-  const base = model.includes('pro') ? PRO : FLASH
+  // Gateways spell the id every way: `DeepSeek-V4.1-Flash`, `deepseek-chat`.
+  const id = model.toLowerCase()
+  if (!id.startsWith('deepseek')) return null
+  const base = id.includes('pro') ? PRO : FLASH
   const factor = isPeak(at) ? 2 : 1
   return { hit: base.hit * factor, miss: base.miss * factor, out: base.out * factor }
 }
@@ -44,6 +46,17 @@ export const HIT_FRESH_MS = 2.5 * 60 * 60 * 1000
 
 export function freshHit(at: number | null, now: number): boolean {
   return at !== null && now - at <= HIT_FRESH_MS
+}
+
+// The store key one conversation's ledger lives under. The desktop app swaps
+// the engine under a conversation as it restarts it, so the engine's own id
+// changes mid-conversation; the app's session id (the environment's
+// CLAUDE_CODE_HOST_SESSION_ID) survives that and leads. A terminal session
+// has no app id and keeps its one engine id for its life.
+export function ledgerKeyFor(hostId: string | undefined, engineId: string | undefined): string | null {
+  if (hostId !== undefined && hostId !== '') return `session-cost:${hostId}`
+  if (engineId !== undefined && engineId !== '') return `session-cost:${engineId}`
+  return null
 }
 
 export type Spend = { cny?: number; live?: number; pending?: number }

@@ -4,7 +4,7 @@ import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from
 import type { CostStats, TurnStats } from '../types'
 import type { Appearance } from './color'
 import { appearanceOf, tint } from './color'
-import { costOf, freshHit, pickLedger, ratesFor, shownCost } from './cost'
+import { costOf, freshHit, ledgerKeyFor, pickLedger, ratesFor, shownCost } from './cost'
 import type { Ledger } from './cost'
 import { appMode, linuxDark, macDark, winDark } from './platform'
 
@@ -26,6 +26,10 @@ let streamed = 0
 // The conversation's ledger key in the host's store, which outlives the
 // process; set once the session's id is known.
 let costKey: string | null = null
+
+// The ledger key the engine's own id would make, kept beside the stable one so
+// a pre-upgrade ledger can be migrated once and a /clear can sweep both.
+let engineLedgerKey: string | null = null
 
 // The highest total the ledger was ever seen holding — boot's read or a later
 // save. A turn that settles nothing must never write a smaller total over it.
@@ -119,13 +123,17 @@ async function boot($: EngineInterface): Promise<void> {
   // does not lose the record. Its id keys the ledger — and without an id
   // nothing is kept at all: sharing one ledger across a directory's
   // conversations would mix their bills, which this must never do.
-  let key: string | null = null
+  const hostId = await $.env.get('CLAUDE_CODE_HOST_SESSION_ID').catch(() => undefined)
+  let engineId: string | undefined
   try {
-    key = `session-cost:${await $.session.id()}`
+    engineId = await $.session.id()
   } catch {
-    // No conversation id, no ledger.
+    // No engine id either: nothing to key a ledger by.
   }
+
+  const key = ledgerKeyFor(hostId, engineId)
   costKey = key
+  engineLedgerKey = engineId !== undefined && engineId !== '' ? `session-cost:${engineId}` : null
 
   if (key === null) {
     await readAppearance($)
@@ -133,7 +141,17 @@ async function boot($: EngineInterface): Promise<void> {
     return
   }
 
-  const saved = await readLedger($, key)
+  let saved = await readLedger($, key)
+
+  // One migration: a ledger written before the stable key existed lives under
+  // the engine's id; adopt it and remove it there, so it cannot be adopted
+  // again later (a /clear must stay cleared).
+  if (saved === null && engineLedgerKey !== null && engineLedgerKey !== key) {
+    saved = await readLedger($, engineLedgerKey)
+    if (saved !== null) {
+      await $.store.delete(engineLedgerKey).catch(() => undefined)
+    }
+  }
   const cny = saved?.cny
   const hit = saved?.hit ?? null
   const at = saved?.at ?? null
@@ -451,8 +469,13 @@ export const register: Register = on => {
 
     // /clear starts the conversation over: its ledger goes with it. A quit or
     // a switch keeps it, so the record survives restarts.
-    if (costKey !== null && e.reason === 'clear') {
-      await $.store.delete(costKey).catch(() => undefined)
+    if (e.reason === 'clear') {
+      if (costKey !== null) {
+        await $.store.delete(costKey).catch(() => undefined)
+      }
+      if (engineLedgerKey !== null && engineLedgerKey !== costKey) {
+        await $.store.delete(engineLedgerKey).catch(() => undefined)
+      }
       ledgerFloor = 0
     }
 
