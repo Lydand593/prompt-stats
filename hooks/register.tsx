@@ -1,0 +1,297 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, TurnStepResult, TurnUsage } from 'claude-code'
+
+import type { CostStats, TurnStats } from '../types'
+import { appearanceOf, tint } from './color'
+import { costOf, ratesFor, shownCost } from './cost'
+import { linuxDark, macDark, winDark } from './platform'
+
+const turn = atom({ plugin: 'prompt-stats', key: 'turn' } as const, null)
+const cost = atom({ plugin: 'prompt-stats', key: 'cost' } as const, null)
+const appearance = atom({ plugin: 'prompt-stats', key: 'appearance' } as const, null)
+
+// Characters of streamed output — the answer or the thinking, billed alike —
+// one output token is worth, so the yuan can move while a response streams.
+// The API's own count replaces it the moment the step lands.
+const CHARS_PER_TOKEN = 3
+const PENDING_TICK = 0.0005
+
+// No response has reported yet; the field keeps its width either way.
+const NO_HIT = '    —%'
+
+let streamed = 0
+
+// The step names the model Claude Code asked for; the model that answers only
+// arrives with the response's usage. Price by the last one seen.
+let answered = 'deepseek-flash'
+
+// Which surface draws the line; `session.start` does not say, the first draw
+// does. It picks which signal decides the light/dark pair — see readAppearance.
+let surface: string | null = null
+
+// The machine's own appearance, asked of each platform in turn; the first
+// probe that answers decides, and none answering leaves it unknown.
+async function probeSystemDark($: EngineInterface): Promise<boolean | null> {
+  const run = (command: string[]) => $.process.run(command).catch(() => undefined)
+
+  const mac = macDark(await run(['defaults', 'read', '-g', 'AppleInterfaceStyle']))
+  if (mac !== null) return mac
+
+  const win = winDark(
+    await run([
+      'reg',
+      'query',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize',
+      '/v',
+      'AppsUseLightTheme',
+    ]),
+  )
+  if (win !== null) return win
+
+  return linuxDark(
+    await run(['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme']),
+  )
+}
+
+// The theme row says what the person chose; under `auto` what the machine says
+// is what decides, and that is the one thing the host does not report. On the
+// desktop the row does not drive the app window — the machine's appearance
+// does, whatever the row says — so there the probe decides; a terminal draws
+// with the row exactly.
+async function readAppearance($: EngineInterface): Promise<void> {
+  const rows = await $.config.list().catch(() => undefined)
+  const setting = rows?.find(row => row.key === 'theme')?.value
+  const desktop = surface === 'desktop'
+
+  let systemDark: boolean | null = null
+
+  if (desktop || (setting !== 'light' && setting !== 'dark')) {
+    systemDark = await probeSystemDark($)
+  }
+
+  const look =
+    desktop && systemDark !== null
+      ? systemDark
+        ? 'dark'
+        : 'light'
+      : appearanceOf(setting, systemDark)
+
+  await update($, appearance, () => look)
+}
+
+// The row is right-aligned, so a figure that grows a digit drags the whole line
+// sideways. Each keeps a width of its own instead.
+function money(value: number): string {
+  return `¥${value.toFixed(3).padStart(7)}`
+}
+
+function percent(hit: number): string {
+  return `${hit.toFixed(1)}%`.padStart(6)
+}
+
+function hitOf(usage: TurnUsage): number | null {
+  const input =
+    usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+  return input > 0 ? Math.round((usage.cache_read_input_tokens / input) * 1000) / 10 : null
+}
+
+async function showHit($: EngineInterface, usage: TurnUsage): Promise<void> {
+  const hitPercent = hitOf(usage)
+  await update($, turn, previous =>
+    previous !== null && previous.hitPercent === hitPercent ? previous : { hitPercent },
+  )
+}
+
+// One response of a turn landed: its own counts take over the running estimate,
+// and its hit rate is the conversation's latest the moment it arrives.
+async function settleStep($: EngineInterface, usage: TurnUsage): Promise<void> {
+  streamed = 0
+
+  const rates = ratesFor(usage.model, await $.clock.now())
+
+  if (rates !== null) {
+    answered = usage.model
+    const spent = costOf(usage, rates)
+    await update($, cost, previous => ({
+      cny: previous?.cny ?? 0,
+      live: (previous?.live ?? 0) + spent,
+      pending: 0,
+    }))
+  } else {
+    await update($, cost, previous => ({
+      cny: previous?.cny ?? 0,
+      live: previous?.live ?? 0,
+      pending: 0,
+    }))
+  }
+
+  await showHit($, usage)
+  $.ui.invalidate('ui.render')
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const result = await next(e)
+    await readAppearance($).catch(() => undefined)
+    return result
+  })
+
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const result = await next(e)
+    await readAppearance($).catch(() => undefined)
+    return result
+  })
+
+  // Watch the answer stream past and move the estimate with it; settle each
+  // response as its usage lands, and hand the engine's own result back whole.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) {
+      return yield* next(e)
+    }
+
+    const rates = ratesFor(answered, await $.clock.now())
+    const source = next(e)[Symbol.asyncIterator]()
+    let result: TurnStepResult | undefined
+    let settled = false
+
+    for (;;) {
+      const piece = await source.next()
+
+      if (piece.done === true) {
+        result = piece.value
+        break
+      }
+
+      const chunk = piece.value
+
+      if (
+        rates !== null &&
+        (chunk.kind === 'text' || chunk.kind === 'thinking') &&
+        chunk.text.length > 0
+      ) {
+        streamed += chunk.text.length
+        const pending = ((streamed / CHARS_PER_TOKEN) * rates.out) / 1_000_000
+        const previous = await read($, cost)
+
+        if (previous === null || pending - (previous.pending ?? 0) >= PENDING_TICK) {
+          await update($, cost, () => ({
+            cny: previous?.cny ?? 0,
+            live: previous?.live ?? 0,
+            pending,
+          }))
+          // A write alone does not repaint the footer while a turn runs.
+          $.ui.invalidate('ui.render')
+        }
+      }
+
+      // Usage rides the response's last chunk; the step's result carries it too
+      // when a hook beneath dropped the chunk, so settle on either, once.
+      if (chunk.kind === 'stop' && chunk.usage !== null) {
+        settled = true
+        await settleStep($, chunk.usage)
+      }
+
+      yield chunk
+    }
+
+    if (!settled && result !== undefined && result.usage !== null) {
+      await settleStep($, result.usage)
+    }
+
+    return result
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    const usage = e.usage
+    const isMain = e.agentId === undefined
+
+    if (usage !== undefined) {
+      const rates = ratesFor(usage.model, await $.clock.now())
+
+      if (rates !== null) {
+        answered = usage.model
+        const spent = costOf(usage, rates)
+
+        if (isMain) {
+          // The turn's own total is the whole truth: the steps' running sum was
+          // only the display, so it gives way to it rather than adding to it.
+          await update($, cost, previous => ({
+            cny: (previous?.cny ?? 0) + spent,
+            live: 0,
+            pending: 0,
+          }))
+        } else {
+          await update($, cost, previous => ({
+            cny: (previous?.cny ?? 0) + spent,
+            live: previous?.live ?? 0,
+            pending: previous?.pending ?? 0,
+          }))
+        }
+      } else if (isMain) {
+        await update($, cost, previous => ({
+          cny: (previous?.cny ?? 0) + (previous?.live ?? 0),
+          live: 0,
+          pending: 0,
+        }))
+      }
+    } else if (isMain) {
+      // An interrupt or an error: what the finished responses cost is still real.
+      await update($, cost, previous => ({
+        cny: (previous?.cny ?? 0) + (previous?.live ?? 0),
+        live: 0,
+        pending: 0,
+      }))
+    }
+
+    if (isMain) {
+      streamed = 0
+      // The machine's appearance can change under a running session.
+      await readAppearance($).catch(() => undefined)
+
+      if (usage !== undefined) {
+        await showHit($, usage)
+      }
+    }
+
+    return result
+  })
+
+  on('session.end', async ($, e, next) => {
+    streamed = 0
+
+    await update($, turn, () => null)
+    await update($, cost, () => null)
+
+    return next(e)
+  })
+
+  // The prompt footer's own site: the line under the prompt box. Drawn from the
+  // first frame; a figure not yet reported reads as a placeholder, not absence.
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
+    if (surface === null) {
+      surface = e.surface
+      void readAppearance($).catch(() => undefined)
+    }
+
+    const last = await read($, turn)
+    const spent = await read($, cost)
+    const look = (await read($, appearance)) ?? 'dark'
+
+    const hit = last?.hitPercent ?? null
+
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexGrow={1} justifyContent="flex-end">
+        <Text>{money(shownCost(spent))}</Text>
+        <Text dimColor> · </Text>
+        {hit === null ? (
+          <Text dimColor>缓存命中率{NO_HIT}</Text>
+        ) : (
+          <Text color={tint(hit, look)}>{`缓存命中率${percent(hit)}`}</Text>
+        )}
+      </Box>
+    )
+  })
+}
