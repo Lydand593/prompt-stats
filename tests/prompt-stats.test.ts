@@ -7,7 +7,7 @@ import type {
   TurnUsage,
 } from 'claude-code'
 
-import { appearanceOf, tint } from '../hooks/color'
+import { appearanceOf, chosenAppearance, tint } from '../hooks/color'
 import { costOf, ratesFor, shownCost } from '../hooks/cost'
 import { linuxDark, macDark, winDark } from '../hooks/platform'
 
@@ -61,6 +61,18 @@ test('the appearance follows the setting, and the machine under auto', async () 
   // The probe failed, or there is no theme row: the dark pair stands.
   expect(appearanceOf('auto', null)).toBe('dark')
   expect(appearanceOf(undefined, null)).toBe('dark')
+})
+
+test('the desktop window follows the machine; a terminal follows the row', async () => {
+  // The row says dark while the machine says light: the window is light.
+  expect(chosenAppearance('desktop', 'dark', false)).toBe('light')
+  expect(chosenAppearance('desktop', 'light', true)).toBe('dark')
+  // A terminal draws with the row exactly, whatever the machine says.
+  expect(chosenAppearance('terminal', 'dark', false)).toBe('dark')
+  expect(chosenAppearance('terminal', undefined, true)).toBe('dark')
+  // No answer from the machine: the row stands, `auto` falling back to dark.
+  expect(chosenAppearance('desktop', 'light', null)).toBe('light')
+  expect(chosenAppearance('desktop', undefined, null)).toBe('dark')
 })
 
 test(`each platform's probe reads its own way, and silence is not an answer`, async () => {
@@ -296,5 +308,24 @@ for (const surface of SURFACES) {
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
     expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
+  })
+
+  test(`the appearance poll runs underneath without disturbing the line (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    const clock = mock.clock(on, { now: NOW })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    const ui = await $.ui.mount(footer(surface))
+
+    await $.turn.complete({ ...DONE, usage: usage(0, 100, 0, 0) })
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
+
+    // Two poll periods pass; the appearance is asked again and kept as it was.
+    await clock.advance(10_000)
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
   })
 }

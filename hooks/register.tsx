@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, TurnStepResult, TurnUsage } from 'claude-code'
+import type { EngineInterface, Register, Timer, TurnStepResult, TurnUsage } from 'claude-code'
 
 import type { CostStats, TurnStats } from '../types'
-import { appearanceOf, tint } from './color'
+import { chosenAppearance, tint } from './color'
 import { costOf, ratesFor, shownCost } from './cost'
 import { linuxDark, macDark, winDark } from './platform'
 
@@ -26,7 +26,8 @@ let streamed = 0
 let answered = 'deepseek-flash'
 
 // Which surface draws the line; `session.start` does not say, the first draw
-// does. It picks which signal decides the light/dark pair — see readAppearance.
+// does. It picks which signal decides the light/dark pair — see
+// `chosenAppearance`.
 let surface: string | null = null
 
 // The machine's own appearance, asked of each platform in turn; the first
@@ -53,11 +54,10 @@ async function probeSystemDark($: EngineInterface): Promise<boolean | null> {
   )
 }
 
-// The theme row says what the person chose; under `auto` what the machine says
-// is what decides, and that is the one thing the host does not report. On the
-// desktop the row does not drive the app window — the machine's appearance
-// does, whatever the row says — so there the probe decides; a terminal draws
-// with the row exactly.
+// Reads the theme row and, when the pair needs the machine, the platform probe;
+// the choice itself is `chosenAppearance`'s. Runs at session start, on a theme
+// change, as each turn lands, and on the poll below — switching the machine's
+// appearance mid-session is caught by that poll alone.
 async function readAppearance($: EngineInterface): Promise<void> {
   const rows = await $.config.list().catch(() => undefined)
   const setting = rows?.find(row => row.key === 'theme')?.value
@@ -69,14 +69,24 @@ async function readAppearance($: EngineInterface): Promise<void> {
     systemDark = await probeSystemDark($)
   }
 
-  const look =
-    desktop && systemDark !== null
-      ? systemDark
-        ? 'dark'
-        : 'light'
-      : appearanceOf(setting, systemDark)
+  const look = chosenAppearance(surface, setting, systemDark)
 
-  await update($, appearance, () => look)
+  const held = await read($, appearance)
+  if (held !== look) {
+    await update($, appearance, () => look)
+  }
+}
+
+// The machine's appearance can change while the session runs, and the desktop
+// app follows it live; a quiet poll catches the switch so the line repaints.
+const APPEARANCE_POLL_MS = 5_000
+let appearancePoll: Timer | null = null
+
+function watchAppearance($: EngineInterface): void {
+  if (appearancePoll !== null) return
+  appearancePoll = $.clock.every(APPEARANCE_POLL_MS, () => {
+    void readAppearance($).catch(() => undefined)
+  })
 }
 
 // The row is right-aligned, so a figure that grows a digit drags the whole line
@@ -133,6 +143,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await readAppearance($).catch(() => undefined)
+    watchAppearance($)
     return result
   })
 

@@ -35,3 +35,14 @@ export function appearanceOf(setting: unknown, systemDark: boolean | null): Appe
   // the machine's own answer stands in for it.
   return systemDark === false ? 'light' : 'dark'
 }
+
+export function chosenAppearance(
+  surface: string | null,
+  setting: unknown,
+  systemDark: boolean | null,
+): Appearance {
+  // The desktop app's window follows the machine, whatever its theme row says;
+  // a terminal draws with the row exactly.
+  if (surface === 'desktop' && systemDark !== null) return systemDark ? 'dark' : 'light'
+  return appearanceOf(setting, systemDark)
+}
