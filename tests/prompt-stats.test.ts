@@ -346,19 +346,22 @@ for (const surface of SURFACES) {
     await clock.settle()
     const ui = await $.ui.mount(footer(surface))
 
-    await $.turn.complete({ ...DONE, usage: usage(1_000_000, 0, 0, 0) })
-    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+    await $.turn.complete({ ...DONE, usage: usage(0, 1_000_000, 0, 1_000_000) })
+    expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
 
-    // A restart is an end and a start over the same conversation: the total
-    // comes back from the store. /clear is an end that takes the ledger with it.
+    // A restart is an end and a start over the same conversation: both figures
+    // come back from the store. /clear is an end that takes the ledger with it.
     await $.session.end({ reason: 'other', sessionId: 's1', resume: { id: 's1' } })
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
     await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /^¥  1\.000$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^¥  4\.020$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
 
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
     await $.session.start({ surface, isInteractive: true, cwd: '/work' })
     await clock.settle()
     expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
   })
 }

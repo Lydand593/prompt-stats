@@ -125,10 +125,22 @@ async function boot($: EngineInterface): Promise<void> {
   }
   costKey = key
 
-  const held = await read($, cost)
   const saved = await $.store.get(costKey).catch(() => undefined)
-  if (held === null && typeof saved === 'number' && saved > 0) {
-    await update($, cost, () => ({ cny: saved, live: 0, pending: 0 }))
+  // The ledger is `{ cny, hit }`; an older build stored the bare cost number,
+  // and both shapes read back here.
+  const record =
+    typeof saved === 'object' && saved !== null ? (saved as { cny?: unknown; hit?: unknown }) : null
+  const cny = typeof saved === 'number' ? saved : typeof record?.cny === 'number' ? record.cny : undefined
+  const hit = typeof record?.hit === 'number' ? record.hit : null
+
+  const held = await read($, cost)
+  if (held === null && cny !== undefined && cny > 0) {
+    await update($, cost, () => ({ cny: cny as number, live: 0, pending: 0 }))
+  }
+
+  const heldTurn = await read($, turn)
+  if (heldTurn === null && hit !== null) {
+    await update($, turn, () => ({ hitPercent: hit as number }))
   }
 
   await readAppearance($)
@@ -372,9 +384,10 @@ export const register: Register = on => {
       // Write the conversation's ledger where a restart can find it.
       if (costKey !== null) {
         const settled = await read($, cost)
-        if (settled !== null) {
-          await $.store.set(costKey, settled.cny).catch(() => undefined)
-        }
+        const reading = await read($, turn)
+        await $.store
+          .set(costKey, { cny: settled?.cny ?? 0, hit: reading?.hitPercent ?? null })
+          .catch(() => undefined)
       }
     }
 
