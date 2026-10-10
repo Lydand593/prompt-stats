@@ -175,7 +175,7 @@ async function boot($: EngineInterface): Promise<void> {
     hit !== null &&
     freshHit(at, await $.clock.now())
   ) {
-    await update($, turn, () => ({ hitPercent: hit as number }))
+    await update($, turn, () => ({ hitPercent: hit as number, at: at ?? undefined }))
   }
 
   // What was just read stands written under this identity too, so the two
@@ -261,17 +261,28 @@ async function readAppearance($: EngineInterface): Promise<void> {
   }
 }
 
-// The machine's appearance can change while the session runs and nobody asks
-// anything of it, and no API announces the switch, so a quiet poll re-reads the
-// pair and asks for the draw every period — the ask is what makes the switch
-// show without a turn. A period short enough to read as immediate.
-const APPEARANCE_POLL_MS = 1_000
-let appearancePoll: Timer | null = null
+// The session sits idle for long stretches, and two things must not outlive
+// their truth: the machine's appearance (no API announces its switch) and a
+// hit rate older than the cache window — a state carried across a restart
+// keeps it alive with nothing to sweep it. One quiet poll serves both, and the
+// ask for the draw is what makes either show without a turn.
+const SWEEP_MS = 1_000
+let sweepTimer: Timer | null = null
 
 function watchAppearance($: EngineInterface): void {
-  if (appearancePoll !== null) return
-  appearancePoll = $.clock.every(APPEARANCE_POLL_MS, () => {
-    void readAppearance($)
+  if (sweepTimer !== null) return
+  sweepTimer = $.clock.every(SWEEP_MS, () => {
+    void (async () => {
+      await readAppearance($)
+
+      const held = await read($, turn)
+      if (held !== null && held.hitPercent !== null) {
+        const now = await $.clock.now()
+        if (!freshHit(held.at ?? null, now)) {
+          await update($, turn, () => null)
+        }
+      }
+    })()
       .catch(() => undefined)
       .then(() => $.ui.invalidate('ui.render'))
   })
@@ -295,9 +306,10 @@ function hitOf(usage: TurnUsage): number | null {
 
 async function showHit($: EngineInterface, usage: TurnUsage): Promise<void> {
   const hitPercent = hitOf(usage)
-  await update($, turn, previous =>
-    previous !== null && previous.hitPercent === hitPercent ? previous : { hitPercent },
-  )
+  const at = await $.clock.now()
+  // The stamp is refreshed with every reading, so the freshness sweep can
+  // tell a live value from one a stale state carried across a restart.
+  await update($, turn, () => ({ hitPercent, at }))
 }
 
 // One response of a turn landed: its own counts take over the running estimate,

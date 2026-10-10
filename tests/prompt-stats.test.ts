@@ -447,6 +447,29 @@ for (const surface of SURFACES) {
     expect(await ui.find({ type: 'Text', text: /^¥  0\.000$/ })).toBeDefined()
   })
 
+  test(`a hit rate idles out once the cache window passes (${surface})`, async ($, on) => {
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('ui.render', { component: 'SessionMode' }, ($, e) =>
+      $.ui.resolve(e).Text({ children: e.props.modes.join(' & ') }),
+    )
+
+    const clock = mock.clock(on, { now: NOW })
+    await $.session.start({ surface, isInteractive: true, cwd: '/work' })
+    const ui = await $.ui.mount(footer(surface))
+
+    await $.turn.complete({ ...DONE, usage: usage(0, 100, 0, 0) })
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
+
+    // The conversation idles past the window: the sweep takes the reading down.
+    await clock.advance(2.5 * 60 * 60 * 1000 + 2_000)
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率    —%$/ })).toBeDefined()
+
+    // The next response measures a fresh one.
+    await $.turn.complete({ ...DONE, turnId: 'b', usage: usage(0, 100, 0, 0) })
+    expect(await ui.find({ type: 'Text', text: /^缓存命中率100\.0%$/ })).toBeDefined()
+  })
+
   test(`the appearance poll runs underneath without disturbing the line (${surface})`, async ($, on) => {
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     on('turn.complete', () => ({ text: '' }))

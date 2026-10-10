@@ -1,5 +1,7 @@
 export type TurnStats = {
   hitPercent: number | null
+  /** When the reading was taken, in $.clock.now() milliseconds. */
+  at?: number
 }
 
 export type CostStats = {
