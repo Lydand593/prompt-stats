@@ -176,6 +176,11 @@ async function boot($: EngineInterface): Promise<void> {
     freshHit(at, await $.clock.now())
   ) {
     await update($, turn, () => ({ hitPercent: hit as number, at: at ?? undefined }))
+  } else if (heldTurn !== null && heldTurn.hitPercent !== null && heldTurn.at === undefined) {
+    // A value a build before the stamp left behind: give it the ledger's
+    // measured time so the sweep judges it by its true age — fresh ones stay,
+    // an overnight one still clears.
+    await update($, turn, () => ({ hitPercent: heldTurn.hitPercent as number, at: at ?? undefined }))
   }
 
   // What was just read stands written under this identity too, so the two
